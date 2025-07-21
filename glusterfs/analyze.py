@@ -1,0 +1,1 @@
+# Analyze GlusterFS logs for healing, split-brain etc.
