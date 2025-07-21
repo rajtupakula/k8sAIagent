@@ -1,4 +1,267 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: ai-assistant
+  name: k8s-ai-assistant
+  namespace: default
+  labels:
+    app: k8s-ai-assistant
+    component: agent
+    version: v1.0.0
+  annotations:
+    description: "Kubernetes AI Assistant for monitoring, forecasting, and remediation"
+spec:
+  serviceAccountName: k8s-ai-assistant
+  restartPolicy: Always
+  
+  # Security context
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  
+  containers:
+  - name: ai-assistant
+    image: k8s-ai-assistant:latest
+    imagePullPolicy: IfNotPresent
+    
+    # Security context for container
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: false  # Set to false because we need to write logs, cache
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      capabilities:
+        drop:
+        - ALL
+    
+    # Resource limits and requests
+    resources:
+      requests:
+        memory: "2Gi"
+        cpu: "500m"
+        ephemeral-storage: "5Gi"
+      limits:
+        memory: "8Gi"
+        cpu: "2000m"
+        ephemeral-storage: "20Gi"
+    
+    # Environment variables
+    env:
+    - name: PYTHONUNBUFFERED
+      value: "1"
+    - name: LOG_LEVEL
+      value: "INFO"
+    - name: KUBERNETES_NAMESPACE
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.namespace
+    - name: POD_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.name
+    - name: NODE_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: spec.nodeName
+    
+    # Ports
+    ports:
+    - name: dashboard
+      containerPort: 8501
+      protocol: TCP
+    - name: llama-server
+      containerPort: 8080
+      protocol: TCP
+    - name: health
+      containerPort: 8000
+      protocol: TCP
+    
+    # Health checks
+    livenessProbe:
+      httpGet:
+        path: /health
+        port: health
+        scheme: HTTP
+      initialDelaySeconds: 60
+      periodSeconds: 30
+      timeoutSeconds: 10
+      failureThreshold: 3
+      successThreshold: 1
+    
+    readinessProbe:
+      httpGet:
+        path: /ready
+        port: health
+        scheme: HTTP
+      initialDelaySeconds: 30
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+      successThreshold: 1
+    
+    # Startup probe for slow model loading
+    startupProbe:
+      httpGet:
+        path: /health
+        port: health
+        scheme: HTTP
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 30  # Allow up to 5 minutes for startup
+      successThreshold: 1
+    
+    # Volume mounts
+    volumeMounts:
+    - name: models-storage
+      mountPath: /app/models
+      readOnly: false
+    - name: data-storage
+      mountPath: /app/data
+      readOnly: false
+    - name: logs-storage
+      mountPath: /app/logs
+      readOnly: false
+    - name: config-volume
+      mountPath: /app/config
+      readOnly: true
+    - name: tmp-storage
+      mountPath: /tmp
+      readOnly: false
+    
+    # Command to run
+    command: ["python3"]
+    args: ["-u", "agent/main.py", "--config", "/app/config/config.json"]
+    
+    # Working directory
+    workingDir: /app
+  
+  # Volumes
+  volumes:
+  - name: models-storage
+    persistentVolumeClaim:
+      claimName: ai-assistant-models-pvc
+  - name: data-storage
+    persistentVolumeClaim:
+      claimName: ai-assistant-data-pvc
+  - name: logs-storage
+    emptyDir:
+      sizeLimit: 1Gi
+  - name: config-volume
+    configMap:
+      name: ai-assistant-config
+      defaultMode: 0644
+  - name: tmp-storage
+    emptyDir:
+      sizeLimit: 2Gi
+  
+  # Node selection and affinity
+  nodeSelector:
+    kubernetes.io/arch: amd64
+  
+  # Tolerations for scheduling
+  tolerations:
+  - key: "node.kubernetes.io/not-ready"
+    operator: "Exists"
+    effect: "NoExecute"
+    tolerationSeconds: 300
+  - key: "node.kubernetes.io/unreachable"
+    operator: "Exists"
+    effect: "NoExecute"
+    tolerationSeconds: 300
+  
+  # Pod anti-affinity to avoid multiple instances on same node
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+            - key: app
+              operator: In
+              values:
+              - k8s-ai-assistant
+          topologyKey: kubernetes.io/hostname
+
+---
+# Persistent Volume Claims for storage
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ai-assistant-models-pvc
+  namespace: default
+  labels:
+    app: k8s-ai-assistant
+    component: storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: standard  # Adjust based on your cluster
+  
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ai-assistant-data-pvc
+  namespace: default
+  labels:
+    app: k8s-ai-assistant
+    component: storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: standard  # Adjust based on your cluster
+
+---
+# ConfigMap for application configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-assistant-config
+  namespace: default
+  labels:
+    app: k8s-ai-assistant
+    component: config
+data:
+  config.json: |
+    {
+      "kubernetes": {
+        "config_file": null,
+        "monitoring_interval": 30
+      },
+      "llama": {
+        "model_dir": "/app/models",
+        "server_host": "0.0.0.0",
+        "server_port": 8080,
+        "default_model": "mistral-7b-instruct",
+        "auto_start": true
+      },
+      "rag": {
+        "embedding_model": "all-MiniLM-L6-v2",
+        "chroma_path": "/app/data/chroma_db",
+        "offline_mode": true
+      },
+      "forecasting": {
+        "data_path": "/app/data/forecast_data",
+        "forecast_interval": 3600
+      },
+      "glusterfs": {
+        "enabled": false,
+        "check_interval": 300
+      },
+      "dashboard": {
+        "enabled": true,
+        "port": 8501
+      }
+    }

@@ -1,6 +1,58 @@
-streamlit
-langchain
-sentence-transformers
-chromadb
-skforecast
-kubernetes
+# Core web framework and visualization
+streamlit>=1.32.0
+pandas>=2.0.0
+plotly>=5.18.0
+numpy>=1.25.0
+
+# Latest AI/ML dependencies for state-of-the-art LLM support
+sentence-transformers>=2.5.0
+chromadb>=0.4.22
+scikit-learn>=1.4.0
+transformers>=4.38.0
+torch>=2.2.0
+tokenizers>=0.15.0
+
+# Advanced LLM frameworks and tools
+langchain>=0.1.10
+langchain-community>=0.0.25
+langchain-core>=0.1.25
+llama-cpp-python>=0.2.55
+openai>=1.12.0
+anthropic>=0.18.0
+huggingface_hub>=0.20.0
+
+# Enhanced text processing and embeddings
+tiktoken>=0.6.0
+faiss-cpu>=1.8.0
+pinecone-client>=3.0.0
+weaviate-client>=4.4.0
+
+# Advanced model optimization
+optimum>=1.17.0
+accelerate>=0.27.0
+bitsandbytes>=0.42.0
+peft>=0.9.0
+
+# Kubernetes client and monitoring
+kubernetes>=29.0.0
+requests>=2.31.0
+pyyaml>=6.0.1
+prometheus-client>=0.20.0
+
+# Enhanced utilities and performance
+python-dateutil>=2.9.0
+pytz>=2024.1
+urllib3>=2.2.0
+certifi>=2024.2.0
+psutil>=5.9.0
+aiofiles>=23.2.0
+asyncio>=3.4.3
+
+# Development and testing
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+
+# Optional advanced features
+# ollama>=0.1.7  # For local model management
+# vllm>=0.3.3    # For high-performance inference
+# llama-index>=0.10.0  # For advanced RAG capabilities
