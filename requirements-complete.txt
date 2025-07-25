@@ -1,0 +1,45 @@
+# Comprehensive requirements for offline K8s AI Assistant with GlusterFS support
+# All dependencies needed for full functionality without internet access
+
+# Core web framework and UI
+streamlit==1.32.0
+plotly==5.17.0
+
+# Essential data handling and computation
+pandas==2.0.3
+numpy==1.25.2
+
+# Storage and filesystem analysis
+lxml==5.1.0  # For XML parsing of GlusterFS output
+psutil==5.9.0  # System resource monitoring
+scikit-learn==1.3.2
+
+# Kubernetes client and monitoring
+kubernetes==29.0.0
+prometheus-client==0.20.0
+psutil==5.9.0
+
+# Basic utilities and networking
+requests==2.31.0
+pyyaml==6.0.1
+
+# AI/ML dependencies for offline functionality
+sentence-transformers==2.2.2
+transformers==4.36.0
+torch==2.1.0
+chromadb==0.4.18
+langchain==0.1.0
+
+# Text processing and embeddings
+tiktoken==0.5.0
+tokenizers==0.15.0
+
+# Additional utilities
+aiohttp==3.9.0
+httpx==0.25.0
+fastapi==0.104.0
+uvicorn==0.24.0
+
+# Development and debugging
+typing-extensions==4.8.0
+python-dateutil==2.8.2

@@ -1,0 +1,32 @@
+# Fast Build Requirements - CPU optimized for containers
+# This version builds faster and avoids complex compilation issues
+
+# Core web framework and visualization
+streamlit==1.32.0
+pandas==2.0.3
+plotly==5.18.0
+numpy==1.25.2
+requests==2.31.0
+pyyaml==6.0.1
+
+# Basic monitoring
+psutil==5.9.8
+
+# Kubernetes API client
+kubernetes==28.1.0
+
+# Simple ML without heavy dependencies
+scikit-learn==1.3.2
+
+# Basic AI dependencies
+langchain==0.1.10
+
+# LLaMA support - CPU only for faster container builds
+llama-cpp-python==0.2.55
+sentence-transformers==2.5.1
+chromadb==0.4.22
+
+# Required for sentence-transformers
+torch==2.1.2+cpu --extra-index-url https://download.pytorch.org/whl/cpu
+transformers==4.36.2
+tokenizers==0.15.0

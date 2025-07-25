@@ -6,6 +6,8 @@ This agent acts as an expert system engineer/developer capable of:
 2. Providing expert-level remediation strategies
 3. Working within existing system constraints (no external binaries)
 4. Automated issue resolution with safety checks
+5. Continuous learning from issue history and log patterns
+6. Root cause prediction based on historical analysis
 """
 
 import os
@@ -18,6 +20,16 @@ from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 from pathlib import Path
 
+# Import the Issue History Manager for continuous learning
+try:
+    from .issue_history_manager import IssueHistoryManager
+except ImportError:
+    try:
+        from issue_history_manager import IssueHistoryManager
+    except ImportError:
+        IssueHistoryManager = None
+        print("Warning: Issue History Manager not available - running without continuous learning")
+
 class ExpertRemediationAgent:
     """Expert-level remediation agent for comprehensive system troubleshooting."""
     
@@ -26,6 +38,15 @@ class ExpertRemediationAgent:
         self.expertise_areas = ["ubuntu_os", "kubernetes", "glusterfs"]
         self.remediation_history = []
         self.safety_mode = True
+        
+        # Initialize Issue History Manager for continuous learning
+        self.history_manager = None
+        if IssueHistoryManager:
+            try:
+                self.history_manager = IssueHistoryManager()
+                print("✅ Issue History Manager initialized - continuous learning enabled")
+            except Exception as e:
+                print(f"⚠️ Could not initialize Issue History Manager: {e}")
         
         # Expert knowledge base for issue patterns and solutions
         self.expert_knowledge = self._load_expert_knowledge()
@@ -231,7 +252,7 @@ class ExpertRemediationAgent:
         }
     
     def analyze_system_comprehensive(self) -> Dict[str, Any]:
-        """Perform comprehensive system analysis across all expertise areas."""
+        """Perform comprehensive system analysis with historical learning and root cause prediction."""
         analysis_results = {
             "timestamp": datetime.now().isoformat(),
             "overall_health": "unknown",
@@ -239,10 +260,29 @@ class ExpertRemediationAgent:
             "warnings": [],
             "recommendations": [],
             "system_metrics": {},
-            "detailed_analysis": {}
+            "detailed_analysis": {},
+            "historical_insights": {},
+            "predictive_analysis": {}
         }
         
         try:
+            # Perform continuous learning scan if history manager is available
+            if self.history_manager:
+                try:
+                    learning_scan = self.history_manager.continuous_learning_scan()
+                    analysis_results["learning_scan"] = {
+                        "issues_detected": learning_scan["issues_detected"],
+                        "total_historical": learning_scan["total_historical_issues"],
+                        "scan_timestamp": learning_scan["scan_timestamp"]
+                    }
+                    
+                    # Get trend analysis
+                    trends = self.history_manager.get_issue_trend_analysis()
+                    analysis_results["historical_insights"] = trends
+                    
+                except Exception as e:
+                    print(f"Warning: Learning scan failed: {e}")
+            
             # Analyze each system component
             for area in self.expertise_areas:
                 area_analysis = self._analyze_area(area)
@@ -252,6 +292,18 @@ class ExpertRemediationAgent:
                 analysis_results["critical_issues"].extend(area_analysis.get("critical_issues", []))
                 analysis_results["warnings"].extend(area_analysis.get("warnings", []))
                 analysis_results["recommendations"].extend(area_analysis.get("recommendations", []))
+                
+                # Add historical predictions for detected issues
+                if self.history_manager and area_analysis.get("critical_issues"):
+                    for issue in area_analysis["critical_issues"]:
+                        prediction = self.history_manager.get_predictive_analysis(issue)
+                        if prediction["confidence"] > 0.0:
+                            if area not in analysis_results["predictive_analysis"]:
+                                analysis_results["predictive_analysis"][area] = []
+                            analysis_results["predictive_analysis"][area].append({
+                                "issue": issue,
+                                "prediction": prediction
+                            })
             
             # Determine overall health
             critical_count = len(analysis_results["critical_issues"])
@@ -266,7 +318,11 @@ class ExpertRemediationAgent:
             else:
                 analysis_results["overall_health"] = "healthy"
             
-            # Prioritize recommendations
+            # Prioritize recommendations based on historical success rates
+            if self.history_manager:
+                analysis_results["recommendations"] = self._prioritize_recommendations_with_history(
+                    analysis_results["recommendations"]
+                )
             analysis_results["recommendations"] = self._prioritize_recommendations(
                 analysis_results["recommendations"]
             )
@@ -1278,6 +1334,46 @@ class ExpertRemediationAgent:
         if len(self.remediation_history) > 100:
             self.remediation_history = self.remediation_history[-100:]
     
+    def _prioritize_recommendations_with_history(self, recommendations: List[str]) -> List[str]:
+        """Prioritize recommendations based on historical success rates."""
+        if not self.history_manager:
+            return recommendations
+        
+        # For now, return as-is - can be enhanced with specific success rate tracking
+        return recommendations
+    
+    def get_historical_issue_analysis(self, issue_description: str) -> Dict[str, Any]:
+        """Get historical analysis and prediction for a specific issue."""
+        if not self.history_manager:
+            return {"message": "Historical analysis not available"}
+        
+        try:
+            prediction = self.history_manager.get_predictive_analysis(issue_description)
+            trends = self.history_manager.get_issue_trend_analysis()
+            
+            return {
+                "prediction": prediction,
+                "trends": trends,
+                "learning_report": self.history_manager.generate_learning_report()
+            }
+        except Exception as e:
+            return {"error": f"Historical analysis failed: {e}"}
+    
+    def perform_continuous_learning_update(self) -> Dict[str, Any]:
+        """Perform a manual continuous learning update."""
+        if not self.history_manager:
+            return {"message": "Continuous learning not available"}
+        
+        try:
+            scan_result = self.history_manager.continuous_learning_scan()
+            return {
+                "success": True,
+                "scan_result": scan_result,
+                "learning_report": self.history_manager.generate_learning_report()
+            }
+        except Exception as e:
+            return {"success": False, "error": f"Learning update failed: {e}"}
+    
     def get_remediation_history(self) -> List[Dict[str, Any]]:
         """Get remediation history for audit purposes."""
         return self.remediation_history.copy()
@@ -1288,7 +1384,7 @@ class ExpertRemediationAgent:
         self.logger.info(f"Safety mode {'enabled' if enabled else 'disabled'}")
     
     def get_system_health_summary(self) -> str:
-        """Get a comprehensive system health summary in natural language."""
+        """Get a comprehensive system health summary with historical insights."""
         analysis = self.analyze_system_comprehensive()
         
         summary_parts = []
@@ -1303,6 +1399,35 @@ class ExpertRemediationAgent:
             summary_parts.append("🟠 **System Status: DEGRADED** - Multiple issues affecting system performance.")
         elif health_status == "critical":
             summary_parts.append("🔴 **System Status: CRITICAL** - Immediate attention required!")
+        
+        # Add historical insights
+        if "historical_insights" in analysis and analysis["historical_insights"]:
+            insights = analysis["historical_insights"]
+            summary_parts.append(f"\n📊 **Historical Analysis:**")
+            summary_parts.append(f"• Recent Issues (24h): {insights.get('recent_issues_24h', 0)}")
+            summary_parts.append(f"• Trend Direction: {insights.get('trend_direction', 'unknown').title()}")
+            if insights.get('most_frequent_type'):
+                most_frequent = insights['most_frequent_type']
+                summary_parts.append(f"• Most Frequent Issue: {most_frequent[0]} ({most_frequent[1]} occurrences)")
+        
+        # Add predictive analysis
+        if "predictive_analysis" in analysis and analysis["predictive_analysis"]:
+            summary_parts.append(f"\n🔮 **Predictive Analysis:**")
+            for area, predictions in analysis["predictive_analysis"].items():
+                for pred_data in predictions[:2]:  # Show top 2 predictions per area
+                    pred = pred_data["prediction"]
+                    if pred["confidence"] > 0.5:
+                        summary_parts.append(f"• {area.title()}: {pred['predicted_cause']} (confidence: {pred['confidence']:.1%})")
+        
+        # Add learning scan results
+        if "learning_scan" in analysis:
+            scan = analysis["learning_scan"]
+            summary_parts.append(f"\n🧠 **Continuous Learning:**")
+            summary_parts.append(f"• New Issues Detected: {scan['issues_detected']}")
+            summary_parts.append(f"• Total Historical Issues: {scan['total_historical']}")
+            summary_parts.append(f"• Last Scan: {scan['scan_timestamp'][:19]}")
+    
+        # Overall health
         else:
             summary_parts.append("⚪ **System Status: UNKNOWN** - Unable to determine system health.")
         

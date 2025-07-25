@@ -1,0 +1,415 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k8s-ai-agent-config
+  namespace: default
+  labels:
+    app: k8s-ai-agent
+    component: config
+data:
+  # Core operational mode - can be changed at runtime
+  mode: "interactive"
+  automation_level: "semi_auto"
+  confidence_threshold: "80"
+  log_level: "info"
+  ui_mode: "advanced"  # Enable Advanced Dashboard UI with ALL User Guide features
+  
+  # Feature flags - modifiable during runtime (User Guide compliance)
+  historical_learning: "true"
+  predictive_analysis: "true"
+  continuous_monitoring: "true"     # Enable for User Guide forecasting
+  backend_auto_remediation: "false"
+  enable_monitoring: "true"
+  enable_history: "true"
+  enable_forecasting: "true"        # Enable forecasting tab
+  enable_glusterfs: "true"          # Enable GlusterFS health tab
+  
+  # Safety settings
+  safety_checks: "true"
+  audit_logging: "true"
+  max_confidence_required: "95"
+  
+  # UI behavior (always interactive)
+  ui_always_interactive: "true"
+  ui_require_confirmation: "true"
+  
+  # Performance settings
+  max_concurrent_jobs: "5"
+  timeout_seconds: "300"
+  
+  # Full YAML configuration file
+  config.yaml: |
+    mode: "interactive"
+    automation_level: "semi_auto"
+    confidence_threshold: 80
+    log_level: "info"
+    historical_learning: true
+    predictive_analysis: true
+    continuous_monitoring: false
+    backend_auto_remediation: false
+    enable_monitoring: true
+    enable_history: true
+    ui_always_interactive: true
+    ui_require_confirmation: true
+    safety_checks: true
+    audit_logging: true
+    max_confidence_required: 95
+    max_concurrent_jobs: 5
+    timeout_seconds: 300
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-ai-agent
+  namespace: default
+  labels:
+    app: k8s-ai-agent
+spec:
+  type: NodePort
+  ports:
+    - name: streamlit-ui
+      port: 8501
+      targetPort: 8501
+      nodePort: 30185
+      protocol: TCP
+    - name: llama-api
+      port: 8080
+      targetPort: 8080
+      nodePort: 30180
+      protocol: TCP
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+      nodePort: 30190
+      protocol: TCP
+  selector:
+    app: k8s-ai-agent
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: k8s-ai-agent-data-pv
+  namespace: default
+  labels:
+    type: local
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: "/mnt/robot_datafs/k8s-ai-agent"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: k8s-ai-agent-data-pvc
+  namespace: default
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  volumeName: k8s-ai-agent-data-pv
+  selector:
+    matchLabels:
+      type: local
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: k8s-ai-agent-log-pv
+  namespace: default
+  labels:
+    type: local
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 500Mi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: "/mnt/robot_logfs/k8s-ai-agent"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: k8s-ai-agent-log-pvc
+  namespace: default
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 500Mi
+  volumeName: k8s-ai-agent-log-pv
+  selector:
+    matchLabels:
+      type: local
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-ai-agent
+  namespace: default
+  labels:
+    app: k8s-ai-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-ai-agent
+  template:
+    metadata:
+      labels:
+        app: k8s-ai-agent
+        tier: robot-infra
+    spec:
+      serviceAccount: robot-app
+      serviceAccountName: robot-app
+      # Remove hostNetwork and hostPID to avoid privileged mode issues
+      securityContext:
+        runAsUser: 1000  # Run as k8s-agent user to avoid bash entrypoint
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: k8s-ai-agent
+          image: dockerhub.cisco.com/robot-dockerprod/k8s-ai-agent:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            # Remove privileged mode to avoid GLIBC issues
+            runAsUser: 1000
+            capabilities:
+              add: 
+                - "SYS_ADMIN"
+                - "SYS_PTRACE" 
+                - "NET_ADMIN"
+                - "SYS_CHROOT"
+                - "SETUID"
+                - "SETGID"
+                - "DAC_OVERRIDE"
+                - "FOWNER"
+                - "SYS_RESOURCE"
+          ports:
+            - containerPort: 8501
+              name: streamlit-ui
+              protocol: TCP
+            - containerPort: 8080
+              name: llama-api
+              protocol: TCP
+            - containerPort: 9090
+              name: metrics
+              protocol: TCP
+            - containerPort: 9090
+              name: metrics
+          env:
+            - name: CONFIG_PATH
+              value: "/etc/config/config.yaml"
+            - name: DATA_DIR
+              value: "/data"
+            - name: LOG_DIR
+              value: "/var/log/k8s-ai-agent"
+            # Runtime configuration from ConfigMap
+            - name: K8S_AI_MODE
+              valueFrom:
+                configMapKeyRef:
+                  name: k8s-ai-agent-config
+                  key: mode
+            - name: K8S_AI_AUTOMATION_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: k8s-ai-agent-config
+                  key: automation_level
+            - name: K8S_AI_CONFIDENCE_THRESHOLD
+              valueFrom:
+                configMapKeyRef:
+                  name: k8s-ai-agent-config
+                  key: confidence_threshold
+            - name: K8S_AI_HISTORICAL_LEARNING
+              valueFrom:
+                configMapKeyRef:
+                  name: k8s-ai-agent-config
+                  key: historical_learning
+            - name: K8S_AI_PREDICTIVE_ANALYSIS
+              valueFrom:
+                configMapKeyRef:
+                  name: k8s-ai-agent-config
+                  key: predictive_analysis
+            - name: K8S_AI_CONTINUOUS_MONITORING
+              valueFrom:
+                configMapKeyRef:
+                  name: k8s-ai-agent-config
+                  key: continuous_monitoring
+            - name: K8S_AI_BACKEND_AUTO_REMEDIATION
+              valueFrom:
+                configMapKeyRef:
+                  name: k8s-ai-agent-config
+                  key: backend_auto_remediation
+            - name: K8S_AI_SAFETY_CHECKS
+              valueFrom:
+                configMapKeyRef:
+                  name: k8s-ai-agent-config
+                  key: safety_checks
+            - name: K8S_AI_AUDIT_LOGGING
+              valueFrom:
+                configMapKeyRef:
+                  name: k8s-ai-agent-config
+                  key: audit_logging
+            - name: K8S_AI_UI_ALWAYS_INTERACTIVE
+              valueFrom:
+                configMapKeyRef:
+                  name: k8s-ai-agent-config
+                  key: ui_always_interactive
+            - name: K8S_AI_UI_REQUIRE_CONFIRMATION
+              valueFrom:
+                configMapKeyRef:
+                  name: k8s-ai-agent-config
+                  key: ui_require_confirmation
+            - name: UI_MODE
+              valueFrom:
+                configMapKeyRef:
+                  name: k8s-ai-agent-config
+                  key: ui_mode
+            # Fixed port configuration
+            - name: STREAMLIT_SERVER_PORT
+              value: "8501"
+            - name: STREAMLIT_SERVER_ADDRESS
+              value: "0.0.0.0"
+            - name: LLAMA_SERVER_PORT
+              value: "8080"
+            - name: LLAMA_SERVER_HOST
+              value: "0.0.0.0"
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/config
+              readOnly: true
+            - name: data-volume
+              mountPath: /data
+            - name: log-volume
+              mountPath: /var/log/k8s-ai-agent
+            # Host system access for GlusterFS
+            - name: host-proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: host-sys
+              mountPath: /host/sys
+              readOnly: true
+            - name: host-var-lib
+              mountPath: /host/var/lib
+            - name: host-usr-bin
+              mountPath: /host/usr/bin
+              readOnly: true
+            - name: host-usr-sbin
+              mountPath: /host/usr/sbin
+              readOnly: true
+            - name: host-etc
+              mountPath: /host/etc
+              readOnly: true
+            # GlusterFS specific mounts
+            - name: glusterfs-logs
+              mountPath: /var/log/glusterfs
+            - name: glusterfs-lib
+              mountPath: /var/lib/glusterd
+            # Additional host mounts for system command execution
+            - name: host-root
+              mountPath: /host
+              readOnly: false
+            - name: host-run
+              mountPath: /host/run
+            - name: host-tmp
+              mountPath: /host/tmp
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+          livenessProbe:
+            httpGet:
+              path: /_stcore/health
+              port: 8501
+            initialDelaySeconds: 60  # Give time for both LLaMA and Streamlit to start
+            timeoutSeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /_stcore/health
+              port: 8501
+            initialDelaySeconds: 30  # Wait for services to initialize
+            timeoutSeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /_stcore/health
+              port: 8501
+            initialDelaySeconds: 10
+            timeoutSeconds: 5
+            periodSeconds: 10
+            failureThreshold: 12      # 120 seconds total for LLaMA model download + startup
+      volumes:
+        - name: config-volume
+          configMap:
+            name: k8s-ai-agent-config
+        - name: data-volume
+          persistentVolumeClaim:
+            claimName: k8s-ai-agent-data-pvc
+        - name: log-volume
+          persistentVolumeClaim:
+            claimName: k8s-ai-agent-log-pvc
+        # Host system access volumes for GlusterFS
+        - name: host-proc
+          hostPath:
+            path: /proc
+            type: Directory
+        - name: host-sys
+          hostPath:
+            path: /sys
+            type: Directory
+        - name: host-var-lib
+          hostPath:
+            path: /var/lib
+            type: Directory
+        - name: host-usr-bin
+          hostPath:
+            path: /usr/bin
+            type: Directory
+        - name: host-usr-sbin
+          hostPath:
+            path: /usr/sbin
+            type: Directory
+        - name: host-etc
+          hostPath:
+            path: /etc
+            type: Directory
+        # GlusterFS specific volumes
+        - name: glusterfs-logs
+          hostPath:
+            path: /var/log/glusterfs
+            type: DirectoryOrCreate
+        - name: glusterfs-lib
+          hostPath:
+            path: /var/lib/glusterd
+            type: DirectoryOrCreate
+        # Additional host volumes for system command execution
+        - name: host-root
+          hostPath:
+            path: /
+            type: Directory
+        - name: host-run
+          hostPath:
+            path: /run
+            type: Directory
+        - name: host-tmp
+          hostPath:
+            path: /tmp
+            type: Directory
+      imagePullSecrets:
+        - name: registry-image-pull-secret

@@ -1,0 +1,98 @@
+version: '3.8'
+
+services:
+  k8s-ai-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: "${VERSION:-1.0.0}"
+        BUILD_DATE: "${BUILD_DATE}"
+        VCS_REF: "${VCS_REF}"
+    image: "k8s-ai-agent:${IMAGE_TAG:-latest}"
+    container_name: k8s-ai-agent-local
+    ports:
+      - "8501:8501"  # Streamlit UI (Fixed port)
+      - "8080:8080"  # LLaMA API Server
+      - "9090:9090"  # Health check/metrics
+    environment:
+      - MODE=interactive
+      - UI_MODE=advanced  # Enable Advanced Dashboard UI
+      - UI_INTERACTIVE=true
+      - ENABLE_HISTORICAL_LEARNING=true
+      - ENABLE_RUNTIME_CONFIG=true
+      - PYTHONPATH=/app
+      # Fixed port configuration
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+      - LLAMA_SERVER_PORT=8080
+      - LLAMA_SERVER_HOST=0.0.0.0
+    volumes:
+      # Configuration volume (for runtime config)
+      - ./k8s/runtime-configmap.yaml:/app/config/runtime-config.yaml:ro
+      # Logs volume (for persistence)
+      - ai-agent-logs:/app/logs
+      # Models volume (for model caching)
+      - ai-agent-models:/app/models
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health", "||", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s  # Allow time for LLaMA model download
+    restart: unless-stopped
+    networks:
+      - ai-agent-network
+
+  # Local registry for testing (optional)
+  registry:
+    image: registry:2
+    container_name: local-registry
+    ports:
+      - "5000:5000"
+    environment:
+      REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY: /var/lib/registry
+    volumes:
+      - registry-data:/var/lib/registry
+    networks:
+      - ai-agent-network
+    profiles:
+      - registry
+
+  # Prometheus for monitoring (optional)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: ai-agent-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - ai-agent-network
+    profiles:
+      - monitoring
+
+volumes:
+  ai-agent-logs:
+    driver: local
+  ai-agent-models:
+    driver: local
+  registry-data:
+    driver: local
+  prometheus-data:
+    driver: local
+
+networks:
+  ai-agent-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

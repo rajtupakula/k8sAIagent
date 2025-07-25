@@ -9,6 +9,7 @@ This is the main application that orchestrates all components:
 - GlusterFS health monitoring
 - Automated remediation capabilities
 - Web dashboard interface
+- Multi-mode operation (Debug, Remediation, Interactive, Monitoring, Hybrid)
 """
 
 import os
@@ -17,32 +18,78 @@ import logging
 import asyncio
 import threading
 import time
+
+# Disable telemetry before any other imports
+try:
+    from .telemetry_disable import disable_all_telemetry
+    disable_all_telemetry()
+except ImportError:
+    # Fallback manual telemetry disabling
+    os.environ["ANONYMIZED_TELEMETRY"] = "False"
+    os.environ["CHROMA_TELEMETRY"] = "False"
+    os.environ["DO_NOT_TRACK"] = "1"
 import signal
 from datetime import datetime
 from pathlib import Path
 
-# Add current directory to path for imports
+# Add current directory and parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from monitor import KubernetesMonitor
 from rag_agent import RAGAgent
 from remediate import RemediationEngine
 from scheduler.forecast import ResourceForecaster
 from glusterfs.analyze import GlusterFSAnalyzer
-from scripts.llama_runner import LlamaServerManager
+
+# Import LlamaServerManager with graceful fallback
+try:
+    from scripts.llama_runner import LlamaServerManager
+    LLAMA_SERVER_AVAILABLE = True
+except ImportError:
+    logging.debug("LlamaServerManager not available - LLM features will be disabled")
+    LLAMA_SERVER_AVAILABLE = False
+    LlamaServerManager = None
+
+# Import configuration manager
+try:
+    from runtime_config_manager import RuntimeConfigManager, OperationalMode, init_with_flags, get_config_manager
+    ConfigManager = RuntimeConfigManager
+except ImportError:
+    try:
+        from config_manager import ConfigManager, OperationalMode, init_with_flags
+    except ImportError:
+        print("Warning: Configuration manager not available, using default settings")
+        ConfigManager = None
+        OperationalMode = None
+        init_with_flags = None
 
 class KubernetesAIAssistant:
-    """Main orchestrator for the Kubernetes AI Assistant."""
+    """Main orchestrator for the Kubernetes AI Assistant with multi-mode operation."""
     
-    def __init__(self, config_file: str = None):
+    def __init__(self, config_file: str = None, config_manager=None):
         """
         Initialize the AI Assistant.
         
         Args:
             config_file: Optional configuration file path
+            config_manager: Optional configuration manager instance
         """
+        # Use provided config manager or create default
+        self.config_manager = config_manager
+        if not self.config_manager:
+            try:
+                from agent.runtime_config_manager import get_config_manager
+                self.config_manager = get_config_manager()
+            except Exception as e:
+                print(f"Warning: Could not initialize config manager: {e}")
+                self.config_manager = None
+        
         self.logger = self._setup_logging()
         self.config = self._load_config(config_file)
+        
+        # Clean up any existing ChromaDB instances on startup
+        self._cleanup_chromadb()
         
         # Initialize components
         self.monitor = None
@@ -61,6 +108,27 @@ class KubernetesAIAssistant:
         signal.signal(signal.SIGTERM, self._signal_handler)
         
         self.logger.info("Kubernetes AI Assistant initialized")
+        if self.config_manager:
+            current_config = self.config_manager.get_config()
+            self.logger.info(f"Mode: {current_config.mode.value}")
+    
+    def _cleanup_chromadb(self):
+        """Clean up any existing ChromaDB instances to prevent conflicts."""
+        try:
+            import shutil
+            data_dir = "/data"
+            if os.path.exists(data_dir):
+                # Find and clean up old ChromaDB instances
+                for item in os.listdir(data_dir):
+                    if item.startswith("chroma_db_") and os.path.isdir(os.path.join(data_dir, item)):
+                        try:
+                            shutil.rmtree(os.path.join(data_dir, item), ignore_errors=True)
+                            print(f"Cleaned up old ChromaDB instance: {item}")
+                        except Exception:
+                            pass  # Ignore cleanup errors
+        except Exception:
+            pass  # Ignore all cleanup errors
+    
     
     def _setup_logging(self) -> logging.Logger:
         """Setup logging configuration."""
@@ -121,8 +189,14 @@ class KubernetesAIAssistant:
         return default_config
     
     async def initialize_components(self):
-        """Initialize all AI assistant components."""
+        """Initialize all AI assistant components based on operational mode."""
         try:
+            # Show current configuration
+            if self.config_manager:
+                status = self.config_manager.get_status_summary()
+                self.logger.info(f"🎛️ Operational Mode: {status['mode_description']}")
+                self.logger.info(f"🤖 Automation Level: {status['automation_description']}")
+            
             self.logger.info("Initializing components...")
             
             # Initialize Kubernetes monitor
@@ -134,8 +208,8 @@ class KubernetesAIAssistant:
             if not self.monitor.is_connected():
                 self.logger.warning("Kubernetes cluster not accessible, some features will be limited")
             
-            # Initialize LLaMA server if configured
-            if self.config["llama"]["auto_start"]:
+            # Initialize LLaMA server if configured and available
+            if self.config["llama"]["auto_start"] and LLAMA_SERVER_AVAILABLE:
                 self.logger.info("Initializing LLaMA server...")
                 self.llama_server = LlamaServerManager(
                     model_dir=self.config["llama"]["model_dir"],
@@ -145,6 +219,11 @@ class KubernetesAIAssistant:
                 
                 # Try to start with default model
                 await self._start_llama_server()
+            elif not LLAMA_SERVER_AVAILABLE:
+                self.logger.debug("LLaMA server not available - skipping initialization")
+                self.llama_server = None
+            else:
+                self.llama_server = None
             
             # Initialize RAG agent
             self.logger.info("Initializing RAG agent...")
@@ -159,6 +238,20 @@ class KubernetesAIAssistant:
             # Initialize remediation engine
             self.logger.info("Initializing remediation engine...")
             self.remediation = RemediationEngine()
+            
+            # Apply mode-specific configurations
+            if self.config_manager and hasattr(self.rag_agent, 'expert_agent'):
+                self.config_manager.apply_mode_specific_settings(
+                    expert_agent=self.rag_agent.expert_agent,
+                    rag_agent=self.rag_agent
+                )
+            
+            # Configure auto-remediation based on mode
+            if self.config_manager:
+                auto_remediate = self.config_manager.should_auto_remediate()
+                if hasattr(self.remediation, 'set_auto_mode'):
+                    self.remediation.set_auto_mode(auto_remediate)
+                self.logger.info(f"🔧 Auto-remediation: {'✅ Enabled' if auto_remediate else '❌ Disabled'}")
             
             # Initialize forecaster
             self.logger.info("Initializing resource forecaster...")
@@ -179,7 +272,7 @@ class KubernetesAIAssistant:
     
     async def _start_llama_server(self):
         """Start the LLaMA server with retry logic."""
-        if not self.llama_server:
+        if not self.llama_server or not LLAMA_SERVER_AVAILABLE:
             return
         
         try:
@@ -347,18 +440,45 @@ class KubernetesAIAssistant:
             
             self.logger.info(f"Starting dashboard on port {dashboard_port}...")
             
+            # Ensure the dashboard path exists
+            if not os.path.exists(dashboard_path):
+                self.logger.error(f"Dashboard file not found: {dashboard_path}")
+                return None
+            
             cmd = [
                 sys.executable, "-m", "streamlit", "run", 
                 dashboard_path,
                 "--server.port", str(dashboard_port),
-                "--server.address", "0.0.0.0"
+                "--server.address", "0.0.0.0",
+                "--server.headless", "true",
+                "--server.enableCORS", "false",
+                "--browser.gatherUsageStats", "false"
             ]
             
-            # Start dashboard in background
-            dashboard_process = subprocess.Popen(cmd)
-            
-            self.logger.info(f"Dashboard started at http://localhost:{dashboard_port}")
-            return dashboard_process
+            # Start dashboard in background with proper error handling
+            try:
+                dashboard_process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=dict(os.environ, STREAMLIT_BROWSER_GATHER_USAGE_STATS="False")
+                )
+                
+                # Give it a moment to start
+                time.sleep(2)
+                
+                # Check if process is still running
+                if dashboard_process.poll() is None:
+                    self.logger.info(f"Dashboard started successfully at http://0.0.0.0:{dashboard_port}")
+                    return dashboard_process
+                else:
+                    stdout, stderr = dashboard_process.communicate()
+                    self.logger.error(f"Dashboard failed to start. Error: {stderr.decode()}")
+                    return None
+                    
+            except Exception as proc_error:
+                self.logger.error(f"Failed to start dashboard process: {proc_error}")
+                return None
             
         except Exception as e:
             self.logger.error(f"Error starting dashboard: {e}")
@@ -412,6 +532,10 @@ class KubernetesAIAssistant:
             report["error"] = str(e)
         
         return report
+    
+    def get_status(self) -> dict:
+        """Alias for get_status_report for compatibility."""
+        return self.get_status_report()
     
     def _generate_recommendations(self, status_report: dict) -> list:
         """Generate recommendations based on current status."""
@@ -489,14 +613,40 @@ async def main():
     parser.add_argument("--status", action="store_true", help="Show status and exit")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
     
+    # Multi-mode configuration arguments
+    parser.add_argument("--mode", choices=["debug", "remediation", "interactive", "monitoring", "hybrid"], 
+                       default="interactive", help="Operational mode")
+    parser.add_argument("--automation-level", choices=["manual", "semi_auto", "full_auto"], 
+                       default="semi_auto", help="Automation level")
+    parser.add_argument("--confidence-threshold", type=int, default=80, 
+                       help="Confidence threshold for automated actions (0-100)")
+    parser.add_argument("--historical-learning", type=str, choices=["true", "false"], 
+                       default="true", help="Enable historical learning")
+    parser.add_argument("--predictive-analysis", type=str, choices=["true", "false"], 
+                       default="true", help="Enable predictive analysis")
+    parser.add_argument("--continuous-monitoring", type=str, choices=["true", "false"], 
+                       default="false", help="Enable continuous monitoring")
+    parser.add_argument("--auto-remediation", type=str, choices=["true", "false"], 
+                       default="false", help="Enable automatic remediation")
+    
     args = parser.parse_args()
     
     # Setup logging level
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
     
-    # Create AI assistant
-    assistant = KubernetesAIAssistant(config_file=args.config)
+    # Initialize configuration manager with runtime flags if available
+    if ConfigManager and init_with_flags:
+        config_manager = init_with_flags(args)
+        current_config = config_manager.get_config()
+        print(f"🎛️ Initialized in {current_config.mode.value} mode")
+        print(f"📊 Configuration: {config_manager.get_mode_description()}")
+    else:
+        config_manager = None
+        print("⚠️ Running with default configuration (config manager unavailable)")
+    
+    # Create AI assistant with configuration
+    assistant = KubernetesAIAssistant(config_file=args.config, config_manager=config_manager)
     
     try:
         # Initialize components

@@ -12,7 +12,22 @@ class GlusterFSAnalyzer:
     
     def __init__(self, gluster_cmd: str = "gluster"):
         self.logger = logging.getLogger(__name__)
+        
+        # Check for host-mounted gluster command first (privileged mode)
+        possible_commands = [
+            "/usr/local/bin/gluster",  # Symlinked from host
+            "/host/usr/bin/gluster",   # Direct host access
+            "/host/usr/sbin/gluster",  # Host sbin
+            "gluster"                  # System default
+        ]
+        
         self.gluster_cmd = gluster_cmd
+        for cmd in possible_commands:
+            if os.path.exists(cmd) and os.access(cmd, os.X_OK):
+                self.gluster_cmd = cmd
+                self.logger.info(f"Using GlusterFS command: {cmd}")
+                break
+        
         self.volume_info = {}
         self.peer_info = {}
         self.heal_data = {}
@@ -37,10 +52,12 @@ class GlusterFSAnalyzer:
                 self.logger.info("GlusterFS CLI is available")
                 return True
             else:
-                self.logger.warning("GlusterFS CLI not available, using mock data")
+                self.logger.debug("GlusterFS CLI not available, using mock data")
                 return False
         except Exception as e:
-            self.logger.warning(f"GlusterFS CLI not available: {e}, using mock data")
+            # In containerized environments, GlusterFS CLI is often not available
+            # Log as debug to reduce noise since this is expected behavior
+            self.logger.debug(f"GlusterFS CLI not available: {e}, using mock data")
             return False
     
     def get_health_status(self) -> Dict[str, Any]:
@@ -129,11 +146,12 @@ class GlusterFSAnalyzer:
             if result.returncode == 0:
                 return self._parse_volume_xml(result.stdout)
             else:
-                self.logger.warning("Failed to get real volume info, using mock data")
+                self.logger.debug("Failed to get real volume info, using mock data")
                 return self._mock_volume_info()
                 
         except Exception as e:
-            self.logger.warning(f"Error getting volume info: {e}, using mock data")
+            # Expected in containerized environments without GlusterFS CLI
+            self.logger.debug(f"Error getting volume info: {e}, using mock data")
             return self._mock_volume_info()
     
     def _parse_volume_xml(self, xml_output: str) -> Dict[str, Any]:
@@ -210,7 +228,7 @@ class GlusterFSAnalyzer:
                 return self._mock_peer_status()
                 
         except Exception as e:
-            self.logger.warning(f"Error getting peer status: {e}, using mock data")
+            self.logger.debug(f"Error getting peer status: {e}, using mock data")
             return self._mock_peer_status()
     
     def _parse_peer_xml(self, xml_output: str) -> Dict[str, Any]:
@@ -290,7 +308,7 @@ class GlusterFSAnalyzer:
                     heal_data[vol_name] = self._mock_heal_info()
                     
             except Exception as e:
-                self.logger.warning(f"Error getting heal info for {vol_name}: {e}")
+                self.logger.debug(f"Error getting heal info for {vol_name}: {e}")
                 heal_data[vol_name] = self._mock_heal_info()
         
         return heal_data

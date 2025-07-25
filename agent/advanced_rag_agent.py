@@ -14,18 +14,45 @@ from datetime import datetime, timedelta
 import asyncio
 from dataclasses import dataclass, asdict
 
-# Core LLM and ML imports
+# Core LLM and ML imports with graceful fallbacks
 try:
     import chromadb
+    CHROMADB_AVAILABLE = True
+except ImportError:
+    logging.warning("ChromaDB not available - vector search will be disabled")
+    CHROMADB_AVAILABLE = False
+    chromadb = None
+
+try:
     from sentence_transformers import SentenceTransformer
+    SENTENCE_TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    logging.warning("SentenceTransformer not available - embeddings will be disabled")
+    SENTENCE_TRANSFORMERS_AVAILABLE = False
+    SentenceTransformer = None
+
+try:
     from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
     import torch
+    TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    logging.warning("Transformers/PyTorch not available - advanced features will be disabled")
+    TRANSFORMERS_AVAILABLE = False
+    AutoTokenizer = AutoModelForCausalLM = pipeline = torch = None
+
+try:
     from langchain.text_splitter import RecursiveCharacterTextSplitter
     from langchain.schema import Document
-    ADVANCED_DEPS_AVAILABLE = True
-except ImportError as e:
-    logging.warning(f"Advanced dependencies not available: {e}")
-    ADVANCED_DEPS_AVAILABLE = False
+    LANGCHAIN_AVAILABLE = True
+except ImportError:
+    logging.warning("LangChain not available - will use basic text processing")
+    LANGCHAIN_AVAILABLE = False
+    RecursiveCharacterTextSplitter = Document = None
+
+ADVANCED_DEPS_AVAILABLE = all([
+    CHROMADB_AVAILABLE, SENTENCE_TRANSFORMERS_AVAILABLE, 
+    TRANSFORMERS_AVAILABLE, LANGCHAIN_AVAILABLE
+])
 
 # LLM Backend Support
 try:

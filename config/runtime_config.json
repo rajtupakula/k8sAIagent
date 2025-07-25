@@ -1,0 +1,20 @@
+{
+  "runtime_config": {
+    "mode": "interactive",
+    "automation_level": "semi_auto",
+    "confidence_threshold": 80,
+    "historical_learning": true,
+    "predictive_analysis": true,
+    "continuous_monitoring": false,
+    "backend_auto_remediation": false,
+    "ui_always_interactive": true,
+    "ui_require_confirmation": true,
+    "safety_checks": true,
+    "audit_logging": true,
+    "max_confidence_required": 95
+  },
+  "metadata": {
+    "last_update": "2025-07-23T00:42:28.060408",
+    "ui_mode": "always_interactive"
+  }
+}

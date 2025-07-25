@@ -1,0 +1,27 @@
+# Proven working requirements for AI agent functionality  
+streamlit==1.32.0
+pandas==2.0.3
+plotly==5.18.0  # Required for Advanced Dashboard UI
+numpy==1.25.2
+requests==2.31.0
+pyyaml==6.0.1
+
+# Basic monitoring
+psutil==5.9.8
+
+# Kubernetes API client - verified working
+kubernetes==28.1.0
+
+# Simple text processing without heavy ML
+scikit-learn==1.3.2
+
+# Basic AI dependencies for RAG functionality
+langchain==0.1.10  # Required for text splitting in RAG agent
+
+# LLaMA server support for interactive AI
+llama-cpp-python>=0.2.55
+sentence-transformers>=2.5.0
+chromadb>=0.4.22
+
+# Async support  
+aiohttp==3.9.1

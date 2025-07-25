@@ -22,9 +22,19 @@ class RemediationEngine:
         """Connect to Kubernetes cluster."""
         try:
             try:
+                # Try in-cluster config first (when running in pod)
                 config.load_incluster_config()
-            except:
-                config.load_kube_config()
+                self.logger.info("Using in-cluster Kubernetes configuration")
+            except config.ConfigException:
+                # Fallback to kubeconfig file (development/local)
+                try:
+                    config.load_kube_config()
+                    self.logger.info("Using kubeconfig file for Kubernetes connection")
+                except config.ConfigException as e:
+                    self.logger.warning(f"No valid Kubernetes configuration found: {e}")
+                    self.logger.warning("Remediation engine will run in limited mode")
+                    self.connected = False
+                    return
             
             self.v1 = client.CoreV1Api()
             self.apps_v1 = client.AppsV1Api()
@@ -32,7 +42,8 @@ class RemediationEngine:
             self.logger.info("Remediation engine connected to cluster")
             
         except Exception as e:
-            self.logger.error(f"Failed to connect remediation engine: {e}")
+            self.logger.warning(f"Failed to connect remediation engine: {e}")
+            self.logger.warning("Remediation engine will run in limited mode")
             self.connected = False
     
     def auto_remediate(self, issue_id: str) -> Dict[str, Any]:

@@ -1,16 +1,31 @@
 #!/bin/bash
 
-# Build script for Kubernetes AI Assistant
-# This script builds the Docker image and prepares for deployment
+# Build script for K8s AI Agent (Jenkins compatible)
+# This script is a wrapper around the optimized build script
 
-set -e
+set -e  # Exit on any error
 
-# Configuration
-IMAGE_NAME="k8s-ai-assistant"
-IMAGE_TAG="${1:-latest}"
-REGISTRY="${REGISTRY:-}"
-BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-VCS_REF=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+# Get script directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Colors for output
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+log() {
+    echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')] $1${NC}"
+}
+
+info() {
+    echo -e "${BLUE}[$(date +'%Y-%m-%d %H:%M:%S')] INFO: $1${NC}"
+}
+
+log "🚀 Starting Kubernetes AI Assistant build..."
+info "Using optimized build script with space optimization"
+
+# Execute the optimized build script
+exec "${SCRIPT_DIR}/build-optimized.sh" "$@"
 VERSION="${VERSION:-1.0.0}"
 
 # Colors for output

@@ -46,6 +46,7 @@ usage() {
     echo "  status        Show deployment status"
     echo "  logs          Show application logs"
     echo "  port-forward  Forward ports for local access"
+    echo "  verify        Verify NodePort access and connectivity"
     echo
     echo "Environment variables:"
     echo "  NAMESPACE      Kubernetes namespace (default: default)"
@@ -90,14 +91,14 @@ prepare_manifests() {
     # Copy manifests to temp directory
     cp -r k8s/* "${temp_dir}/"
     
-    # Update image in pod.yaml if registry is specified
+    # Update image in k8s-ai-agent.yaml if registry is specified
     if [ -n "${REGISTRY}" ]; then
-        local full_image="${REGISTRY}/k8s-ai-assistant:${IMAGE_TAG}"
+        local full_image="${REGISTRY}/k8s-ai-agent:${IMAGE_TAG}"
         log "Updating image to: ${full_image}"
         
-        # Use sed to replace the image line
-        sed -i.bak "s|image: k8s-ai-assistant:latest|image: ${full_image}|g" "${temp_dir}/pod.yaml"
-        rm "${temp_dir}/pod.yaml.bak"
+        # Use sed to replace the image line in the deployment
+        sed -i.bak "s|image: dockerhub.cisco.com/robot-dockerprod/k8s-ai-agent:latest|image: ${full_image}|g" "${temp_dir}/k8s-ai-agent.yaml"
+        rm "${temp_dir}/k8s-ai-agent.yaml.bak" 2>/dev/null || true
     fi
     
     # Update namespace in all files
@@ -128,14 +129,18 @@ deploy() {
     local manifest_dir=$(prepare_manifests)
     
     # Apply manifests in order
-    local manifests=("rbac.yaml" "pod.yaml" "service.yaml")
+    local manifests=("02-rbac.yaml" "k8s-ai-agent.yaml")
     
     for manifest in "${manifests[@]}"; do
-        log "Applying ${manifest}..."
-        if [ "${DRY_RUN}" = "true" ]; then
-            kubectl apply -f "${manifest_dir}/${manifest}" -n "${NAMESPACE}" --dry-run=client
+        if [ -f "${manifest_dir}/${manifest}" ]; then
+            log "Applying ${manifest}..."
+            if [ "${DRY_RUN}" = "true" ]; then
+                kubectl apply -f "${manifest_dir}/${manifest}" -n "${NAMESPACE}" --dry-run=client
+            else
+                kubectl apply -f "${manifest_dir}/${manifest}" -n "${NAMESPACE}"
+            fi
         else
-            kubectl apply -f "${manifest_dir}/${manifest}" -n "${NAMESPACE}"
+            warning "Manifest ${manifest} not found, skipping..."
         fi
     done
     
@@ -148,28 +153,58 @@ deploy() {
     fi
     
     # Wait for deployment to be ready
-    log "Waiting for pod to be ready (timeout: ${WAIT_TIMEOUT}s)..."
-    if kubectl wait --for=condition=Ready pod/k8s-ai-assistant -n "${NAMESPACE}" --timeout="${WAIT_TIMEOUT}s"; then
+    log "Waiting for deployment to be ready (timeout: ${WAIT_TIMEOUT}s)..."
+    if kubectl wait --for=condition=Ready pod -l app=k8s-ai-agent -n "${NAMESPACE}" --timeout="${WAIT_TIMEOUT}s"; then
         success "Deployment completed successfully!"
         
         # Show status
         show_status
         
-        log "To access the dashboard:"
-        echo "  External NodePort access:"
-        echo "  - Dashboard: http://<node-ip>:30501"
-        echo "  - LLaMA API: http://<node-ip>:30080"
-        echo "  - Health: http://<node-ip>:30000"
+        # Get node IPs for NodePort access
+        log "Getting cluster node information for external access..."
+        EXTERNAL_IPS=$(kubectl get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="ExternalIP")].address}' 2>/dev/null || echo "")
+        INTERNAL_IPS=$(kubectl get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "")
+        
+        if [ -n "$EXTERNAL_IPS" ]; then
+            NODE_IPS="$EXTERNAL_IPS"
+            IP_TYPE="External"
+        elif [ -n "$INTERNAL_IPS" ]; then
+            NODE_IPS="$INTERNAL_IPS"
+            IP_TYPE="Internal"
+        else
+            NODE_IPS="<NODE_IP>"
+            IP_TYPE="Unknown"
+        fi
+        
+        log "Access Information:"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "🌐 NodePort Access (External):"
+        if [ "$NODE_IPS" != "<NODE_IP>" ]; then
+            for ip in $NODE_IPS; do
+                echo "  📱 Streamlit Dashboard: http://${ip}:30080"
+                echo "  📊 Metrics Endpoint:    http://${ip}:30090"
+            done
+            echo "  💡 IP Type: ${IP_TYPE}"
+        else
+            echo "  📱 Streamlit Dashboard: http://<NODE_IP>:30080"
+            echo "  📊 Metrics Endpoint:    http://<NODE_IP>:30090"
+            echo "  💡 Get node IPs: kubectl get nodes -o wide"
+        fi
         echo ""
-        echo "  Or use port forwarding:"
-        echo "  kubectl port-forward pod/k8s-ai-assistant -n ${NAMESPACE} 8501:8501"
-        echo "  Then open: http://localhost:8501"
+        echo "🔗 Port Forwarding (Local Development):"
+        echo "  kubectl port-forward service/k8s-ai-agent -n ${NAMESPACE} 8080:8080"
+        echo "  Then access: http://localhost:8080"
         echo ""
-        echo "  To get node IPs: kubectl get nodes -o wide"
+        echo "🔧 Troubleshooting:"
+        echo "  - Check service: kubectl get service k8s-ai-agent -n ${NAMESPACE}"
+        echo "  - Check pods: kubectl get pods -l app=k8s-ai-agent -n ${NAMESPACE}"
+        echo "  - View logs: kubectl logs -l app=k8s-ai-agent -n ${NAMESPACE}"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         
     else
         error "Deployment failed or timed out"
-        error "Check pod status with: kubectl describe pod/k8s-ai-assistant -n ${NAMESPACE}"
+        error "Check deployment status with: kubectl describe deployment k8s-ai-agent -n ${NAMESPACE}"
+        error "Check pod status with: kubectl get pods -l app=k8s-ai-agent -n ${NAMESPACE}"
         exit 1
     fi
 }
@@ -189,71 +224,193 @@ delete() {
     
     # Wait for resources to be deleted
     log "Waiting for resources to be deleted..."
-    kubectl wait --for=delete pod/k8s-ai-assistant -n "${NAMESPACE}" --timeout=60s 2>/dev/null || true
+    kubectl wait --for=delete pod -l app=k8s-ai-agent -n "${NAMESPACE}" --timeout=60s 2>/dev/null || true
     
     success "AI Assistant deleted successfully"
 }
 
 # Status function
 show_status() {
-    log "Kubernetes AI Assistant Status in namespace: ${NAMESPACE}"
+    log "Kubernetes AI Agent Status in namespace: ${NAMESPACE}"
+    echo
+    
+    # Deployment status
+    echo "Deployment Status:"
+    kubectl get deployment k8s-ai-agent -n "${NAMESPACE}" -o wide 2>/dev/null || echo "Deployment not found"
     echo
     
     # Pod status
     echo "Pod Status:"
-    kubectl get pod/k8s-ai-assistant -n "${NAMESPACE}" -o wide 2>/dev/null || echo "Pod not found"
+    kubectl get pods -l app=k8s-ai-agent -n "${NAMESPACE}" -o wide 2>/dev/null || echo "Pods not found"
     echo
     
     # Service status
     echo "Service Status:"
-    kubectl get svc -l app=k8s-ai-assistant -n "${NAMESPACE}" 2>/dev/null || echo "No services found"
+    kubectl get svc k8s-ai-agent -n "${NAMESPACE}" -o wide 2>/dev/null || echo "Service not found"
     echo
     
-    # PVC status
+    # Check NodePort access
+    SERVICE_TYPE=$(kubectl get service k8s-ai-agent -n "${NAMESPACE}" -o jsonpath='{.spec.type}' 2>/dev/null || echo "")
+    if [ "$SERVICE_TYPE" = "NodePort" ]; then
+        HTTP_NODEPORT=$(kubectl get service k8s-ai-agent -n "${NAMESPACE}" -o jsonpath='{.spec.ports[?(@.name=="http")].nodePort}' 2>/dev/null || echo "")
+        METRICS_NODEPORT=$(kubectl get service k8s-ai-agent -n "${NAMESPACE}" -o jsonpath='{.spec.ports[?(@.name=="metrics")].nodePort}' 2>/dev/null || echo "")
+        echo "NodePort Configuration:"
+        echo "  - Dashboard: ${HTTP_NODEPORT}"
+        echo "  - Metrics: ${METRICS_NODEPORT}"
+        echo
+    fi
+    
+    # PVC status  
     echo "Storage Status:"
-    kubectl get pvc -l app=k8s-ai-assistant -n "${NAMESPACE}" 2>/dev/null || echo "No PVCs found"
+    kubectl get pvc -l app=k8s-ai-agent -n "${NAMESPACE}" 2>/dev/null || echo "No PVCs found"
     echo
     
     # Events
     echo "Recent Events:"
-    kubectl get events --field-selector involvedObject.name=k8s-ai-assistant -n "${NAMESPACE}" --sort-by='.lastTimestamp' | tail -10 2>/dev/null || echo "No events found"
+    kubectl get events --field-selector involvedObject.kind=Deployment --field-selector involvedObject.name=k8s-ai-agent -n "${NAMESPACE}" --sort-by='.lastTimestamp' | tail -10 2>/dev/null || echo "No deployment events found"
 }
 
 # Logs function
 show_logs() {
-    log "Showing logs for Kubernetes AI Assistant in namespace: ${NAMESPACE}"
+    log "Showing logs for Kubernetes AI Agent in namespace: ${NAMESPACE}"
     
-    if ! kubectl get pod/k8s-ai-assistant -n "${NAMESPACE}" &> /dev/null; then
-        error "Pod not found in namespace ${NAMESPACE}"
+    if ! kubectl get pods -l app=k8s-ai-agent -n "${NAMESPACE}" &> /dev/null; then
+        error "No pods found with label app=k8s-ai-agent in namespace ${NAMESPACE}"
         exit 1
     fi
     
     # Follow logs
-    kubectl logs pod/k8s-ai-assistant -n "${NAMESPACE}" -f
+    kubectl logs -l app=k8s-ai-agent -n "${NAMESPACE}" -f
 }
 
 # Port forward function
 port_forward() {
-    log "Setting up port forwarding for Kubernetes AI Assistant"
+    log "Setting up port forwarding for Kubernetes AI Agent"
     
-    if ! kubectl get pod/k8s-ai-assistant -n "${NAMESPACE}" &> /dev/null; then
-        error "Pod not found in namespace ${NAMESPACE}"
+    if ! kubectl get pods -l app=k8s-ai-agent -n "${NAMESPACE}" &> /dev/null; then
+        error "No pods found with label app=k8s-ai-agent in namespace ${NAMESPACE}"
         exit 1
     fi
     
-    log "Port forwarding setup:"
-    echo "  Dashboard: http://localhost:8501"
-    echo "  LLaMA API: http://localhost:8080"
-    echo "  Health: http://localhost:8000"
-    echo ""
-    echo "  Note: NodePort services are also available:"
-    echo "  - Dashboard: http://<node-ip>:30501"
-    echo "  - LLaMA API: http://<node-ip>:30080"
-    echo "  - Health: http://<node-ip>:30000"
-    echo ""
-    log "Press Ctrl+C to stop port forwarding"
+    # Get node IPs for NodePort reference
+    EXTERNAL_IPS=$(kubectl get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="ExternalIP")].address}' 2>/dev/null || echo "")
+    INTERNAL_IPS=$(kubectl get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "")
     
-    kubectl port-forward pod/k8s-ai-assistant -n "${NAMESPACE}" 8501:8501 8080:8080 8000:8000
+    if [ -n "$EXTERNAL_IPS" ]; then
+        NODE_IP=$(echo $EXTERNAL_IPS | cut -d' ' -f1)
+    elif [ -n "$INTERNAL_IPS" ]; then
+        NODE_IP=$(echo $INTERNAL_IPS | cut -d' ' -f1)
+    else
+        NODE_IP="<NODE_IP>"
+    fi
+    
+    log "Port forwarding setup:"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "🔗 Local Access (Port Forwarding):"
+    echo "  📱 Dashboard: http://localhost:8080"
+    echo "  📊 Metrics:   http://localhost:9090"
+    echo ""
+    echo "🌐 NodePort Access (Alternative):"
+    echo "  📱 Dashboard: http://${NODE_IP}:30080"
+    echo "  📊 Metrics:   http://${NODE_IP}:30090"
+    echo ""
+    echo "💡 Use Ctrl+C to stop port forwarding"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    
+    kubectl port-forward service/k8s-ai-agent -n "${NAMESPACE}" 8080:8080 9090:9090
+}
+
+# NodePort verification function
+verify_nodeport_access() {
+    log "Verifying NodePort access for Kubernetes AI Agent"
+    
+    # Check if service exists and is NodePort
+    if ! kubectl get service k8s-ai-agent -n "${NAMESPACE}" &> /dev/null; then
+        error "Service k8s-ai-agent not found in namespace ${NAMESPACE}"
+        exit 1
+    fi
+    
+    SERVICE_TYPE=$(kubectl get service k8s-ai-agent -n "${NAMESPACE}" -o jsonpath='{.spec.type}')
+    if [ "$SERVICE_TYPE" != "NodePort" ]; then
+        warning "Service is not configured as NodePort (current type: ${SERVICE_TYPE})"
+        echo "To enable NodePort access, the service needs to be configured with type: NodePort"
+        exit 1
+    fi
+    
+    success "Service is configured as NodePort"
+    
+    # Get NodePort values
+    HTTP_NODEPORT=$(kubectl get service k8s-ai-agent -n "${NAMESPACE}" -o jsonpath='{.spec.ports[?(@.name=="http")].nodePort}' 2>/dev/null || echo "")
+    METRICS_NODEPORT=$(kubectl get service k8s-ai-agent -n "${NAMESPACE}" -o jsonpath='{.spec.ports[?(@.name=="metrics")].nodePort}' 2>/dev/null || echo "")
+    
+    if [ -n "$HTTP_NODEPORT" ] && [ -n "$METRICS_NODEPORT" ]; then
+        success "NodePort configuration found:"
+        echo "  - Dashboard: ${HTTP_NODEPORT}"
+        echo "  - Metrics: ${METRICS_NODEPORT}"
+    else
+        error "Could not retrieve NodePort configuration"
+        exit 1
+    fi
+    
+    # Get node IPs
+    log "Getting cluster node information..."
+    EXTERNAL_IPS=$(kubectl get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="ExternalIP")].address}' 2>/dev/null || echo "")
+    INTERNAL_IPS=$(kubectl get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "")
+    
+    if [ -n "$EXTERNAL_IPS" ]; then
+        NODE_IPS="$EXTERNAL_IPS"
+        IP_TYPE="External"
+    elif [ -n "$INTERNAL_IPS" ]; then
+        NODE_IPS="$INTERNAL_IPS"
+        IP_TYPE="Internal"
+    else
+        error "Could not retrieve node IP addresses"
+        exit 1
+    fi
+    
+    success "Found ${IP_TYPE} Node IPs: ${NODE_IPS}"
+    
+    # Check pod status
+    POD_STATUS=$(kubectl get pods -l app=k8s-ai-agent -n "${NAMESPACE}" -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "NotFound")
+    if [ "$POD_STATUS" = "Running" ]; then
+        success "Pod is running and ready"
+    else
+        warning "Pod status: ${POD_STATUS} (may affect connectivity)"
+    fi
+    
+    # Test connectivity if curl is available
+    log "Testing NodePort connectivity..."
+    if command -v curl &> /dev/null; then
+        for NODE_IP in $NODE_IPS; do
+            DASHBOARD_URL="http://${NODE_IP}:${HTTP_NODEPORT}"
+            echo "Testing ${DASHBOARD_URL}..."
+            
+            if curl -s --connect-timeout 5 "${DASHBOARD_URL}/health" &> /dev/null; then
+                success "✅ Dashboard accessible at ${DASHBOARD_URL}"
+            else
+                warning "⚠️  Dashboard health check failed at ${DASHBOARD_URL} (may still be starting)"
+            fi
+        done
+    else
+        warning "curl not available - skipping connectivity test"
+    fi
+    
+    # Summary
+    echo
+    log "NodePort Access Summary:"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    for NODE_IP in $NODE_IPS; do
+        echo "🌐 Node IP: ${NODE_IP}"
+        echo "  📱 Dashboard: http://${NODE_IP}:${HTTP_NODEPORT}"
+        echo "  📊 Metrics:   http://${NODE_IP}:${METRICS_NODEPORT}"
+        echo
+    done
+    echo "🔧 Troubleshooting:"
+    echo "  - Check firewall: Ensure ports ${HTTP_NODEPORT} and ${METRICS_NODEPORT} are open"
+    echo "  - Check pod: kubectl get pods -l app=k8s-ai-agent -n ${NAMESPACE}"
+    echo "  - Check service: kubectl get service k8s-ai-agent -n ${NAMESPACE}"
+    echo "  - View logs: kubectl logs -l app=k8s-ai-agent -n ${NAMESPACE}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 }
 
 # Main script logic
@@ -290,6 +447,9 @@ main() {
             ;;
         "port-forward")
             port_forward
+            ;;
+        "verify")
+            verify_nodeport_access
             ;;
         "help"|"-h"|"--help")
             usage

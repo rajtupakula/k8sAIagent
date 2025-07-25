@@ -8,6 +8,19 @@ from sklearn.metrics import mean_absolute_error
 import json
 import os
 
+class NumpyEncoder(json.JSONEncoder):
+    """Custom JSON encoder to handle numpy types."""
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, (pd.Timestamp, datetime)):
+            return obj.isoformat()
+        return super().default(obj)
+
 class ResourceForecaster:
     """Forecast resource usage and provide pod placement recommendations."""
     
@@ -55,7 +68,7 @@ class ResourceForecaster:
         try:
             data_file = os.path.join(self.data_path, "historical_data.json")
             with open(data_file, 'w') as f:
-                json.dump(self.historical_data, f, indent=2)
+                json.dump(self.historical_data, f, indent=2, cls=NumpyEncoder)
         except Exception as e:
             self.logger.error(f"Error saving historical data: {e}")
     
@@ -455,7 +468,7 @@ class ResourceForecaster:
         try:
             forecast_file = os.path.join(self.data_path, "latest_forecast.json")
             with open(forecast_file, 'w') as f:
-                json.dump(forecast, f, indent=2)
+                json.dump(forecast, f, indent=2, cls=NumpyEncoder)
         except Exception as e:
             self.logger.error(f"Error saving forecast: {e}")
     

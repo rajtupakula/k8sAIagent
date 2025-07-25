@@ -7,6 +7,14 @@ from kubernetes.client.rest import ApiException
 import threading
 import time
 import queue
+import os
+
+# Import host system monitor if available
+try:
+    from .host_system_monitor import HostSystemMonitor
+    HOST_MONITORING_AVAILABLE = True
+except ImportError:
+    HOST_MONITORING_AVAILABLE = False
 
 class KubernetesMonitor:
     """Monitor Kubernetes cluster for logs, metrics, and issues."""
@@ -22,6 +30,16 @@ class KubernetesMonitor:
         self.metrics_cache = {}
         self.log_queue = queue.Queue(maxsize=1000)
         self.monitoring_active = False
+        
+        # Initialize host system monitor if in privileged mode
+        self.host_monitor = None
+        if HOST_MONITORING_AVAILABLE and os.path.exists("/usr/local/bin/host-exec"):
+            try:
+                self.host_monitor = HostSystemMonitor()
+                self.logger.info("Host system monitoring enabled")
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize host system monitor: {e}")
+        
         self.connect()
     
     def connect(self) -> bool:
@@ -29,11 +47,21 @@ class KubernetesMonitor:
         try:
             if self.config_file:
                 config.load_kube_config(config_file=self.config_file)
+                self.logger.info("Using specified kubeconfig file")
             else:
                 try:
+                    # Try in-cluster config first (when running in pod)
                     config.load_incluster_config()
-                except:
-                    config.load_kube_config()
+                    self.logger.info("Using in-cluster Kubernetes configuration")
+                except config.ConfigException:
+                    # Fallback to kubeconfig file (development/local)
+                    try:
+                        config.load_kube_config()
+                        self.logger.info("Using kubeconfig file for Kubernetes connection")
+                    except config.ConfigException as e:
+                        self.logger.warning(f"No valid Kubernetes configuration found: {e}")
+                        self.connected = False
+                        return False
             
             self.v1 = client.CoreV1Api()
             self.apps_v1 = client.AppsV1Api()
@@ -46,7 +74,8 @@ class KubernetesMonitor:
             return True
             
         except Exception as e:
-            self.logger.error(f"Failed to connect to Kubernetes: {e}")
+            self.logger.warning(f"Failed to connect to Kubernetes: {e}")
+            self.logger.warning("Monitor will run with limited functionality")
             self.connected = False
             return False
     
@@ -109,16 +138,28 @@ class KubernetesMonitor:
                 issues.extend(pod_issues)
             
             # Check node issues
-            nodes = self.v1.list_node()
-            for node in nodes.items:
-                node_issues = self._check_node_issues(node)
-                issues.extend(node_issues)
+            try:
+                nodes = self.v1.list_node()
+                for node in nodes.items:
+                    node_issues = self._check_node_issues(node)
+                    issues.extend(node_issues)
+            except ApiException as e:
+                if e.status == 403:
+                    self.logger.warning("Insufficient permissions to list nodes, skipping node health checks")
+                else:
+                    self.logger.error(f"Error checking nodes: {e}")
             
             # Check persistent volume issues
-            pvs = self.v1.list_persistent_volume()
-            for pv in pvs.items:
-                pv_issues = self._check_pv_issues(pv)
-                issues.extend(pv_issues)
+            try:
+                pvs = self.v1.list_persistent_volume()
+                for pv in pvs.items:
+                    pv_issues = self._check_pv_issues(pv)
+                    issues.extend(pv_issues)
+            except ApiException as e:
+                if e.status == 403:
+                    self.logger.warning("Insufficient permissions to list persistent volumes, skipping PV health checks")
+                else:
+                    self.logger.error(f"Error checking persistent volumes: {e}")
             
             self.issues = issues
             return issues
@@ -201,11 +242,29 @@ class KubernetesMonitor:
             return {'volumes': []}
         
         try:
-            pvs = self.v1.list_persistent_volume()
-            pvcs = self.v1.list_persistent_volume_claim_for_all_namespaces()
+            pvs = []
+            pvcs = []
+            
+            # Try to get persistent volumes with error handling
+            try:
+                pvs = self.v1.list_persistent_volume().items
+            except ApiException as e:
+                if e.status == 403:
+                    self.logger.warning("Insufficient permissions to list persistent volumes")
+                else:
+                    self.logger.error(f"Error listing persistent volumes: {e}")
+            
+            # Try to get persistent volume claims with error handling  
+            try:
+                pvcs = self.v1.list_persistent_volume_claim_for_all_namespaces().items
+            except ApiException as e:
+                if e.status == 403:
+                    self.logger.warning("Insufficient permissions to list persistent volume claims")
+                else:
+                    self.logger.error(f"Error listing persistent volume claims: {e}")
             
             volumes = []
-            for pv in pvs.items:
+            for pv in pvs:
                 volume_info = {
                     'name': pv.metadata.name,
                     'capacity': pv.spec.capacity.get('storage', 'Unknown'),
@@ -230,10 +289,20 @@ class KubernetesMonitor:
             return {'volumes': []}
         
         try:
-            pvs = self.v1.list_persistent_volume()
+            pvs = []
+            try:
+                pvs = self.v1.list_persistent_volume().items
+            except ApiException as e:
+                if e.status == 403:
+                    self.logger.warning("Insufficient permissions to list persistent volumes for health check")
+                    return {'volumes': []}
+                else:
+                    self.logger.error(f"Error listing persistent volumes for health check: {e}")
+                    return {'volumes': []}
+            
             volumes = []
             
-            for pv in pvs.items:
+            for pv in pvs:
                 issues = []
                 healthy = True
                 
@@ -445,3 +514,34 @@ class KubernetesMonitor:
         
         # Assume GB if no suffix
         return float(storage_str.rstrip('G'))
+    
+    def get_host_system_stats(self) -> Dict[str, Any]:
+        """Get host system and GlusterFS statistics if available."""
+        if self.host_monitor:
+            try:
+                return self.host_monitor.collect_all_stats()
+            except Exception as e:
+                self.logger.error(f"Error collecting host system stats: {e}")
+                return {}
+        else:
+            self.logger.debug("Host system monitoring not available")
+            return {}
+    
+    def get_comprehensive_stats(self) -> Dict[str, Any]:
+        """Get comprehensive statistics including Kubernetes and host system data."""
+        stats = {
+            'timestamp': datetime.now().isoformat(),
+            'kubernetes': {
+                'cluster_info': self.get_cluster_info(),
+                'node_metrics': self.get_node_metrics(),
+                'pod_metrics': self.get_pod_metrics(),
+                'persistent_volumes': self.get_persistent_volume_info()
+            }
+        }
+        
+        # Add host system stats if available
+        host_stats = self.get_host_system_stats()
+        if host_stats:
+            stats['host_system'] = host_stats
+        
+        return stats

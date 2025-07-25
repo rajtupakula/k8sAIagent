@@ -1,0 +1,134 @@
+# Optimized Dockerfile for Kubernetes AI Assistant with LLaMA Server
+# CPU-optimized build that avoids compilation issues
+
+FROM python:3.11-slim-bullseye as builder
+
+# Set environment variables for consistent builds
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Install minimal system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create build environment
+WORKDIR /build
+
+# Create virtual environment
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Upgrade pip
+RUN pip install --upgrade pip wheel setuptools
+
+# Install CPU-optimized dependencies step by step to avoid build issues
+RUN pip install --no-cache-dir streamlit==1.32.0 pandas==2.0.3 plotly==5.18.0 numpy==1.25.2
+
+# Install basic dependencies for User Guide features
+RUN pip install --no-cache-dir requests==2.31.0 pyyaml==6.0.1 psutil==5.9.8 kubernetes==28.1.0
+
+# Install ML dependencies
+RUN pip install --no-cache-dir scikit-learn==1.3.2 langchain==0.1.10
+
+# Install torch CPU version first (required for sentence-transformers)
+RUN pip install --no-cache-dir torch==2.1.2+cpu torchvision==0.16.2+cpu --extra-index-url https://download.pytorch.org/whl/cpu
+
+# Install sentence-transformers
+RUN pip install --no-cache-dir sentence-transformers==2.5.1 transformers==4.36.2 tokenizers==0.15.0
+
+# Install chromadb
+RUN pip install --no-cache-dir chromadb==0.4.22
+
+# Install llama-cpp-python with CPU-only optimizations
+ENV CMAKE_ARGS="-DLLAMA_BLAS=OFF -DLLAMA_METAL=OFF -DLLAMA_CUDA=OFF"
+ENV FORCE_CMAKE=1
+RUN pip install --no-cache-dir llama-cpp-python==0.2.55
+
+# Create models directory
+RUN mkdir -p /opt/models
+
+# Runtime stage
+FROM python:3.11-slim-bullseye as runtime
+
+# Install minimal runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    dumb-init \
+    gosu \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy virtual environment and models from builder
+COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder /opt/models /opt/models
+
+# Create non-root user
+RUN useradd --create-home --shell /bin/bash --uid 1000 k8s-agent
+
+# Set up application directory
+WORKDIR /app
+RUN mkdir -p /data /var/log/k8s-ai-agent /etc/config && \
+    chown -R k8s-agent:k8s-agent /app /data /var/log/k8s-ai-agent /opt/models
+
+# Install kubectl
+RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
+    && chmod +x kubectl \
+    && mv kubectl /usr/local/bin/kubectl
+
+# Copy application code
+COPY --chown=k8s-agent:k8s-agent agent/ ./agent/
+COPY --chown=k8s-agent:k8s-agent ui/ ./ui/
+COPY --chown=k8s-agent:k8s-agent scheduler/ ./scheduler/
+COPY --chown=k8s-agent:k8s-agent glusterfs/ ./glusterfs/
+COPY --chown=k8s-agent:k8s-agent scripts/ ./scripts/
+COPY --chown=k8s-agent:k8s-agent .streamlit/ ./.streamlit/
+
+# Copy LLaMA server components
+COPY --chown=k8s-agent:k8s-agent setup_llama_server.py ./
+COPY --chown=k8s-agent:k8s-agent start_llama.sh ./
+COPY --chown=k8s-agent:k8s-agent quick_start_llama.py ./
+COPY --chown=k8s-agent:k8s-agent test_llama_integration.py ./
+COPY --chown=k8s-agent:k8s-agent container_startup.py ./
+COPY --chown=k8s-agent:k8s-agent safe_init.py ./
+
+# Copy main application files
+COPY --chown=k8s-agent:k8s-agent app_wrapper.py ./
+COPY --chown=k8s-agent:k8s-agent validate_startup.py ./
+
+# Create models directory with proper permissions
+RUN mkdir -p /models /opt/models \
+    && chown -R k8s-agent:k8s-agent /models /opt/models \
+    && chmod -R 755 /models /opt/models
+
+# Set environment variables
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONPATH="/app" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    SENTENCE_TRANSFORMERS_HOME="/opt/models" \
+    HF_HOME="/opt/models" \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    CHROMA_TELEMETRY=False \
+    STREAMLIT_SERVER_PORT=8080 \
+    STREAMLIT_SERVER_ADDRESS=0.0.0.0 \
+    K8S_AI_MODE=interactive \
+    K8S_AI_LLAMA_ENABLED=true
+
+# Switch to non-root user
+USER k8s-agent
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8080/ || exit 1
+
+# Expose ports
+EXPOSE 8080
+
+# Start with container startup script
+CMD ["python", "container_startup.py"]

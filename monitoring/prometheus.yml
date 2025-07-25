@@ -1,0 +1,30 @@
+# Prometheus configuration for K8s AI Agent monitoring
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+scrape_configs:
+  # AI Agent application metrics
+  - job_name: 'k8s-ai-agent'
+    static_configs:
+      - targets: ['k8s-ai-agent:8080']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    scrape_timeout: 10s
+
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Docker container metrics (if cAdvisor is available)
+  - job_name: 'docker'
+    static_configs:
+      - targets: ['host.docker.internal:8080']
+    metrics_path: '/metrics'
+    scrape_interval: 30s

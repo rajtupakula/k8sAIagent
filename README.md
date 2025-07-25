@@ -108,26 +108,29 @@ kubectl logs -l app=k8s-ai-assistant -f
 kubectl get nodes -o wide
 
 # Access dashboard directly via NodePort (no port forwarding needed)
-# Main Dashboard: http://<node-ip>:30501
-# LLM API: http://<node-ip>:30080
-# Health Check: http://<node-ip>:30000
+# Streamlit Dashboard: http://<node-ip>:30080
+# Metrics Endpoint: http://<node-ip>:30090
 
-# Example: http://192.168.1.100:30501
+# Example: http://192.168.1.100:30080
 ```
 
 #### Option B: Port Forwarding (Local Access)
 ```bash
 # Set up port forwarding
-kubectl port-forward pod/k8s-ai-assistant 8501:8501
+kubectl port-forward service/k8s-ai-agent 8080:8080
 
 # Access locally
-# http://localhost:8501
+# http://localhost:8080
 ```
 
-### 5. Access Dashboard
-- **Local**: http://localhost:8501
-- **In-cluster**: http://k8s-ai-assistant.default.svc.cluster.local:8501
-- **External**: Configure ingress in `k8s/service.yaml`
+#### Verify Access
+```bash
+# Use the deployment script to check status and get access URLs
+./scripts/deploy.sh status
+
+# Test connectivity (if curl is available)
+curl -s http://<node-ip>:30080/health
+```
 
 ## 🎯 Usage Examples
 

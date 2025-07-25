@@ -1,0 +1,26 @@
+# Ultra-minimal dependencies for lean K8s AI Assistant
+# Target: Essential functionality only
+
+# Core web framework
+streamlit==1.32.0
+
+# Essential data handling  
+pandas==2.0.3
+numpy==1.25.2
+
+# Kubernetes client
+kubernetes==29.0.0
+
+# Basic utilities
+requests==2.31.0
+pyyaml==6.0.1
+
+# Monitoring
+prometheus-client==0.20.0
+psutil==5.9.0
+
+# Note: Removed heavy ML dependencies:
+# - sentence-transformers (large models)
+# - transformers (heavy NLP library) 
+# - scikit-learn (can be added if needed)
+# - langchain (heavy dependency chain)
