@@ -51,6 +51,9 @@ asyncio>=3.4.3
 # Development and testing
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
+streamlit
+requests
+
 
 # Optional advanced features
 # ollama>=0.1.7  # For local model management
